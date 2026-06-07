@@ -107,8 +107,10 @@ const DIST_CLOSE = 0.38;  // hand size above → progress 1
 // Fixed step = perfectly consistent speed, no exponential stutter near 0.
 // At 60fps:  0.012 × 60 = 0.72/s → ~1.4s to fully awaken
 //            0.004 × 60 = 0.24/s → ~4.2s to fully fall asleep
-const STEP_APPROACH = 0.012;
-const STEP_RETREAT  = 0.004;
+// At 60fps:  0.009 × 60 = 0.54/s → ~1.9s to fully awaken
+//            0.008 × 60 = 0.48/s → ~2.1s to fully fall asleep
+const STEP_APPROACH = 0.009;
+const STEP_RETREAT  = 0.008;
 
 const ZONE_LEFT_END    = 0.33;
 const ZONE_RIGHT_START = 0.66;
