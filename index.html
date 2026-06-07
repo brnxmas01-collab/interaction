@@ -103,13 +103,12 @@
 const DIST_FAR   = 0.10;  // hand size below → progress 0
 const DIST_CLOSE = 0.38;  // hand size above → progress 1
 
-// Forward: max progress units advanced per frame (at 60fps).
-// 0.005 × 60 = 0.30 per second → ~3.3 seconds to fully awaken. Cinematic.
-const STEP_APPROACH = 0.005;
-
-// Reverse: lerp factor per frame. Lower = slower fall-asleep.
-// 0.020 at 60fps → ~2–3 seconds to return to dormant.
-const LERP_RETREAT  = 0.020;
+// Both directions use a fixed step per frame (moveTowards).
+// Fixed step = perfectly consistent speed, no exponential stutter near 0.
+// At 60fps:  0.012 × 60 = 0.72/s → ~1.4s to fully awaken
+//            0.004 × 60 = 0.24/s → ~4.2s to fully fall asleep
+const STEP_APPROACH = 0.012;
+const STEP_RETREAT  = 0.004;
 
 const ZONE_LEFT_END    = 0.33;
 const ZONE_RIGHT_START = 0.66;
@@ -171,10 +170,23 @@ function drawCurrentFrame() {
   const dy = (ch - dh) / 2;   // vertical centering offset
 
   ctx.drawImage(vid, dx, dy, dw, dh);
+
+  // ── Mask Kling AI watermark ──────────────────────────────────
+  // Black gradient over the bottom 12% of the canvas hides the text
+  // without cropping or distorting the creature above it.
+  const gradTop = ch * 0.88;
+  const grad = ctx.createLinearGradient(0, gradTop, 0, ch);
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, gradTop, cw, ch - gradTop);
 }
 
-// Draw as soon as a seek completes — never draw stale frames
-vid.addEventListener('seeked', drawCurrentFrame);
+// Draw as soon as a seek completes, then clear the guard so the next seek can go
+vid.addEventListener('seeked', () => {
+  isSeeking = false;
+  drawCurrentFrame();
+});
 
 /* ══════════════════════════════════════════════════
    VIDEO SETUP
@@ -201,13 +213,17 @@ vid.load();
 let targetProgress  = 0;
 let currentProgress = 0;
 let lastSeekTime    = -1;
+let isSeeking       = false;   // guard: skip new seeks while one is pending
 
 function seekTo(t) {
-  // Skip if the change is sub-frame (avoids thrashing the decoder)
+  // Never queue a seek while the previous one is still in flight —
+  // this is the primary cause of reverse stutter.
+  if (isSeeking) return;
   if (Math.abs(t - lastSeekTime) < 0.008) return;
+  isSeeking    = true;
+  lastSeekTime = t;
   vid.currentTime = t;
-  lastSeekTime    = t;
-  // drawCurrentFrame() fires automatically via the 'seeked' event listener
+  // drawCurrentFrame() + isSeeking = false happen in the 'seeked' handler
 }
 
 /* ══════════════════════════════════════════════════
@@ -233,14 +249,12 @@ function frame(ts) {
     catch {}
   }
 
-  // ── Smooth interpolation ──────────────────────────────────────
+  // ── Smooth interpolation (moveTowards both directions) ───────
+  // Fixed step means consistent speed at every point — no stutter near 0.
   if (targetProgress > currentProgress) {
-    // FORWARD: fixed max step per frame → linear, cinematic, never jumps
     currentProgress = Math.min(targetProgress, currentProgress + STEP_APPROACH);
-  } else {
-    // REVERSE: lerp → eases out gracefully as it approaches 0
-    currentProgress += (targetProgress - currentProgress) * LERP_RETREAT;
-    if (currentProgress < 0.0005) currentProgress = 0;
+  } else if (targetProgress < currentProgress) {
+    currentProgress = Math.max(targetProgress, currentProgress - STEP_RETREAT);
   }
 
   // ── Scrub video to currentProgress ───────────────────────────
