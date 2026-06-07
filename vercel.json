@@ -1,25 +1,10 @@
 {
-  "cleanUrls": true,
-  "trailingSlash": false,
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
-        { "key": "Cross-Origin-Embedder-Policy",  "value": "require-corp" },
-        { "key": "Cross-Origin-Resource-Policy",  "value": "cross-origin" }
-      ]
-    },
-    {
-      "source": "/public/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
-      ]
-    }
-  ],
-  "rewrites": [
-    { "source": "/idle.png",             "destination": "/public/idle.png"             },
-    { "source": "/focus_transition.mp4", "destination": "/public/focus_transition.mp4" },
-    { "source": "/focus_end.png",        "destination": "/public/focus_end.png"        }
+  "version": 2,
+  "routes": [
+    { "src": "/focus_transition.mp4", "dest": "/public/focus_transition.mp4" },
+    { "src": "/idle.png",             "dest": "/public/idle.png"             },
+    { "src": "/focus_end.png",        "dest": "/public/focus_end.png"        },
+    { "handle": "filesystem" },
+    { "src": "/(.*)",                 "dest": "/index.html"                  }
   ]
 }
