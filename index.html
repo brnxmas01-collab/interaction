@@ -46,6 +46,26 @@
       padding: 16px 48px; border: none; border-radius: 8px;
       background: #fff; color: #000; cursor: pointer;
     }
+
+    /* Camera preview — bottom-right corner */
+    #cam-preview {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      width: 180px;
+      height: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.25);
+      background: #000;
+      z-index: 1000;
+      opacity: 0.9;
+      transform: scaleX(-1);        /* mirror so it feels natural */
+      display: none;                 /* hidden until camera starts */
+      pointer-events: none;
+    }
+    @media (max-width: 768px) {
+      #cam-preview { width: 120px; right: 12px; bottom: 12px; }
+    }
   </style>
 </head>
 <body>
@@ -68,6 +88,9 @@
   <div><b>dpr          </b><em id="d-dpr">—</em></div>
 </div>
 
+<!-- Camera preview — purely visual, does not affect hand tracking -->
+<video id="cam-preview" muted playsinline autoplay></video>
+
 <div id="start-screen">
   <button id="start-btn">START</button>
 </div>
@@ -80,10 +103,13 @@
 const DIST_FAR   = 0.10;  // hand size below → progress 0
 const DIST_CLOSE = 0.38;  // hand size above → progress 1
 
-// How fast currentProgress chases targetProgress.
-// Lower = smoother / slower.
-const LERP_APPROACH = 0.07;   // creature wakes up
-const LERP_RETREAT  = 0.020;  // creature slowly falls asleep (~2–3s return)
+// Forward: max progress units advanced per frame (at 60fps).
+// 0.005 × 60 = 0.30 per second → ~3.3 seconds to fully awaken. Cinematic.
+const STEP_APPROACH = 0.005;
+
+// Reverse: lerp factor per frame. Lower = slower fall-asleep.
+// 0.020 at 60fps → ~2–3 seconds to return to dormant.
+const LERP_RETREAT  = 0.020;
 
 const ZONE_LEFT_END    = 0.33;
 const ZONE_RIGHT_START = 0.66;
@@ -208,16 +234,13 @@ function frame(ts) {
   }
 
   // ── Smooth interpolation ──────────────────────────────────────
-  // Use faster lerp when approaching (waking up),
-  // slower lerp when retreating (falling asleep).
-  const approaching = targetProgress > currentProgress;
-  const lerpSpeed   = approaching ? LERP_APPROACH : LERP_RETREAT;
-
-  currentProgress += (targetProgress - currentProgress) * lerpSpeed;
-
-  // Snap to exact target when close enough to avoid micro-drift
-  if (Math.abs(targetProgress - currentProgress) < 0.0005) {
-    currentProgress = targetProgress;
+  if (targetProgress > currentProgress) {
+    // FORWARD: fixed max step per frame → linear, cinematic, never jumps
+    currentProgress = Math.min(targetProgress, currentProgress + STEP_APPROACH);
+  } else {
+    // REVERSE: lerp → eases out gracefully as it approaches 0
+    currentProgress += (targetProgress - currentProgress) * LERP_RETREAT;
+    if (currentProgress < 0.0005) currentProgress = 0;
   }
 
   // ── Scrub video to currentProgress ───────────────────────────
@@ -309,9 +332,17 @@ startScreen.addEventListener('click', async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
     });
+
+    // Hidden video for MediaPipe hand detection
     camEl = document.createElement('video');
     camEl.srcObject = stream; camEl.muted = true; camEl.playsInline = true;
     await camEl.play();
+
+    // Visible preview in the corner — same stream, purely decorative
+    const preview = document.getElementById('cam-preview');
+    preview.srcObject = stream;
+    preview.style.display = 'block';
+
     await loadTracker();
   } catch(e) {
     console.warn('[Camera]', e.name);
