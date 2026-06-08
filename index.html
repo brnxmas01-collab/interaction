@@ -126,9 +126,11 @@ const ZONE_LEFT_END    = 0.33;
 const ZONE_RIGHT_START = 0.66;
 
 // Open-palm threshold:
-// A finger is "extended" if its tip y is this much ABOVE its PIP joint.
-// Small positive margin avoids false-positives on slightly curled fingers.
-const EXTEND_MARGIN = 0.01;
+// A finger counts as extended if its tip is above its PIP joint
+// by at least this margin (negative = forgives slight bending).
+// 3+ extended fingers out of 4 = open palm.
+const EXTEND_MARGIN   = -0.03;  // negative = accept slightly bent fingers
+const OPEN_PALM_MIN   = 3;      // out of 4 main fingers (thumb excluded)
 
 /* ══════════════════════════════════════════════════
    DOM
@@ -374,18 +376,19 @@ requestAnimationFrame(frame);
 
 /* ══════════════════════════════════════════════════
    OPEN PALM DETECTION
-   All four main fingers must have their tip clearly
-   above their PIP joint (lower y value = higher up).
-   Thumb is intentionally excluded — unreliable across
-   hand orientations and not needed for this gesture.
+   Counts how many of the 4 main fingers are extended
+   (tip above PIP, with a forgiving negative margin so
+   slightly bent fingers still count).
+   3 or more out of 4 = open palm.
+   Thumb excluded — unreliable across hand orientations.
 ══════════════════════════════════════════════════ */
 function detectOpenPalm(lm) {
-  return (
-    lm[8].y  < lm[6].y  - EXTEND_MARGIN &&  // index
-    lm[12].y < lm[10].y - EXTEND_MARGIN &&  // middle
-    lm[16].y < lm[14].y - EXTEND_MARGIN &&  // ring
-    lm[20].y < lm[18].y - EXTEND_MARGIN     // pinky
-  );
+  let extended = 0;
+  if (lm[8].y  < lm[6].y  - EXTEND_MARGIN) extended++;  // index
+  if (lm[12].y < lm[10].y - EXTEND_MARGIN) extended++;  // middle
+  if (lm[16].y < lm[14].y - EXTEND_MARGIN) extended++;  // ring
+  if (lm[20].y < lm[18].y - EXTEND_MARGIN) extended++;  // pinky
+  return extended >= OPEN_PALM_MIN;
 }
 
 /* ══════════════════════════════════════════════════
