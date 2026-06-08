@@ -116,10 +116,12 @@
    CONFIG
 ══════════════════════════════════════════════════ */
 // moveTowards step per frame at 60fps:
-//   0.009 × 60 = 0.54/s  →  ~1.9 s to fully awaken
-//   0.008 × 60 = 0.48/s  →  ~2.1 s to fully return
-const STEP_APPROACH = 0.009;
-const STEP_RETREAT  = 0.008;
+//   IMMERSION approach: 0.009 × 60 = 0.54/s  →  ~1.9 s
+//   COMMUNION approach: 0.005 × 60 = 0.30/s  →  ~3.3 s  (50% slower)
+//   retreat (both):     0.008 × 60 = 0.48/s  →  ~2.1 s
+const IMMERSION_STEP_APPROACH = 0.009;
+const COMMUNION_STEP_APPROACH = 0.005;
+const STEP_RETREAT             = 0.008;
 
 // Zone boundaries (mirror-corrected x, 0 = left of screen)
 const ZONE_LEFT_END    = 0.33;
@@ -339,8 +341,12 @@ function frame(ts) {
   updateState(handVisible, openPalm, currentZone);
 
   // Advance progress toward target (fixed step = consistent, no stutter)
+  const stepApproach = displayState === 'communion'
+    ? COMMUNION_STEP_APPROACH
+    : IMMERSION_STEP_APPROACH;
+
   if (progressTarget > progress) {
-    progress = Math.min(progressTarget, progress + STEP_APPROACH);
+    progress = Math.min(progressTarget, progress + stepApproach);
   } else if (progressTarget < progress) {
     progress = Math.max(progressTarget, progress - STEP_RETREAT);
   }
