@@ -14,34 +14,30 @@
       z-index: 1;
     }
 
-    /* Both video elements are hidden — decode sources only */
+    /* Both videos hidden — decode sources only */
     #vid-imm, #vid-com { display: none; }
 
-    /* Debug overlay */
+    /* ── Debug overlay ── */
     #debug {
       position: fixed; top: 16px; left: 16px; z-index: 30;
       pointer-events: none;
       font-family: monospace; font-size: 13px; line-height: 2.2;
       color: #fff; background: rgba(0,0,0,0.65);
-      padding: 10px 16px; border-radius: 7px;
+      padding: 12px 18px; border-radius: 8px;
       border: 1px solid rgba(255,255,255,0.12);
+      min-width: 210px;
     }
-    #debug b  { color: rgba(255,255,255,0.35); font-weight: normal; }
-    #debug em { color: #7cf; font-style: normal; }
+    #debug .row { display: flex; justify-content: space-between; gap: 24px; }
+    #debug .label { color: rgba(255,255,255,0.35); }
+    #debug .val   { color: #7cf; }
 
-    /* Big state label */
-    #d-state {
-      display: block;
-      font-size: 15px; font-weight: bold;
-      letter-spacing: 0.15em; text-transform: uppercase;
-      margin-bottom: 4px;
-    }
-    #d-state.dormant    { color: #888; }
-    #d-state.immersion  { color: #afd; }
-    #d-state.communion  { color: #fad; }
-    #d-state.returning  { color: #fd8; }   /* retreating to switch */
+    /* State label gets its own colour */
+    #d-state.dormant   { color: #888; }
+    #d-state.immersion { color: #afd; }
+    #d-state.communion { color: #fad; }
+    #d-state.returning { color: #fd8; }
 
-    /* Camera preview */
+    /* ── Camera preview ── */
     #cam-preview {
       position: fixed; right: 20px; bottom: 20px;
       width: 180px; height: auto;
@@ -49,7 +45,7 @@
       border: 1px solid rgba(255,255,255,0.25);
       background: #000;
       z-index: 1000; opacity: 0.9;
-      transform: scaleX(-1);
+      transform: scaleX(-1);   /* mirror */
       display: none;
       pointer-events: none;
     }
@@ -57,7 +53,7 @@
       #cam-preview { width: 120px; right: 12px; bottom: 12px; }
     }
 
-    /* Start screen */
+    /* ── Start screen ── */
     #start-screen {
       position: fixed; inset: 0; z-index: 50;
       display: flex; align-items: center; justify-content: center;
@@ -74,25 +70,40 @@
 </head>
 <body>
 
-<!-- Hidden videos — decode sources only, canvas renders them -->
+<!-- Hidden videos — decode sources only -->
 <video id="vid-imm" src="public/focus_transition.mp4"
        muted playsinline preload="auto"></video>
 <video id="vid-com" src="public/communion_transition.mp4"
        muted playsinline preload="auto"></video>
 
-<!-- Canvas: the only visible display, rendered at devicePixelRatio -->
+<!-- Single canvas — the only thing the visitor sees -->
 <canvas id="cv"></canvas>
 
-<!-- Camera preview — same stream as tracking, purely decorative -->
+<!-- Camera preview (bottom-right, mirrored) -->
 <video id="cam-preview" muted playsinline autoplay></video>
 
+<!-- Debug overlay -->
 <div id="debug">
-  <em id="d-state" class="dormant">DORMANT</em>
-  <div><b>fingers  </b><em id="d-fingers">—</em></div>
-  <div><b>pending  </b><em id="d-pending">—</em></div>
-  <div><b>progress </b><em id="d-prog">0.000</em></div>
-  <div><b>target   </b><em id="d-tgt">0.000</em></div>
-  <div><b>time     </b><em id="d-time">0.000</em> s</div>
+  <div class="row">
+    <span class="label">Current State</span>
+    <span class="val" id="d-state" class="dormant">DORMANT</span>
+  </div>
+  <div class="row">
+    <span class="label">Current Zone</span>
+    <span class="val" id="d-zone">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Hand Detected</span>
+    <span class="val" id="d-hand">false</span>
+  </div>
+  <div class="row">
+    <span class="label">Open Palm</span>
+    <span class="val" id="d-open">false</span>
+  </div>
+  <div class="row">
+    <span class="label">Progress</span>
+    <span class="val" id="d-prog">0.000</span>
+  </div>
 </div>
 
 <div id="start-screen">
@@ -104,14 +115,20 @@
 /* ══════════════════════════════════════════════════
    CONFIG
 ══════════════════════════════════════════════════ */
-// Fixed step per frame (at 60fps):
-//   0.009 × 60 = 0.54/s  →  ~1.9s to fully awaken
-//   0.008 × 60 = 0.48/s  →  ~2.1s to fully return
+// moveTowards step per frame at 60fps:
+//   0.009 × 60 = 0.54/s  →  ~1.9 s to fully awaken
+//   0.008 × 60 = 0.48/s  →  ~2.1 s to fully return
 const STEP_APPROACH = 0.009;
 const STEP_RETREAT  = 0.008;
 
+// Zone boundaries (mirror-corrected x, 0 = left of screen)
 const ZONE_LEFT_END    = 0.33;
 const ZONE_RIGHT_START = 0.66;
+
+// Open-palm threshold:
+// A finger is "extended" if its tip y is this much ABOVE its PIP joint.
+// Small positive margin avoids false-positives on slightly curled fingers.
+const EXTEND_MARGIN = 0.01;
 
 /* ══════════════════════════════════════════════════
    DOM
@@ -121,15 +138,15 @@ const vidCom      = document.getElementById('vid-com');
 const cv          = document.getElementById('cv');
 const ctx         = cv.getContext('2d');
 const startScreen = document.getElementById('start-screen');
-const dState      = document.getElementById('d-state');
-const dFingers    = document.getElementById('d-fingers');
-const dPending    = document.getElementById('d-pending');
-const dProg       = document.getElementById('d-prog');
-const dTgt        = document.getElementById('d-tgt');
-const dTime       = document.getElementById('d-time');
+
+const dState = document.getElementById('d-state');
+const dZone  = document.getElementById('d-zone');
+const dHand  = document.getElementById('d-hand');
+const dOpen  = document.getElementById('d-open');
+const dProg  = document.getElementById('d-prog');
 
 /* ══════════════════════════════════════════════════
-   CANVAS — high-DPI setup
+   CANVAS — devicePixelRatio setup
 ══════════════════════════════════════════════════ */
 const DPR = Math.min(window.devicePixelRatio || 1, 3);
 
@@ -144,9 +161,8 @@ window.addEventListener('resize', () => { resizeCanvas(); drawCurrentFrame(); })
 
 /* ══════════════════════════════════════════════════
    DRAW
-   Always reads from the currently active video.
-   Adds a black gradient at the bottom to mask
-   the Kling AI watermark.
+   Reads from the active video, scales to cover,
+   then applies a bottom gradient to mask watermark.
 ══════════════════════════════════════════════════ */
 function drawCurrentFrame() {
   const v = getActiveVid();
@@ -155,14 +171,13 @@ function drawCurrentFrame() {
   const cw = cv.width, ch = cv.height;
   const fw = v.videoWidth, fh = v.videoHeight;
 
-  // Cover scaling
   const scale = Math.max(cw / fw, ch / fh);
   const dw = fw * scale, dh = fh * scale;
   const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
 
   ctx.drawImage(v, dx, dy, dw, dh);
 
-  // Watermark mask: gradient over bottom 12%
+  // Black gradient over bottom 12% — hides Kling AI watermark
   const gradTop = ch * 0.88;
   const grad = ctx.createLinearGradient(0, gradTop, 0, ch);
   grad.addColorStop(0, 'rgba(0,0,0,0)');
@@ -177,11 +192,11 @@ function drawCurrentFrame() {
 let durImm = 0, durCom = 0;
 vidImm.addEventListener('loadedmetadata', () => {
   durImm = vidImm.duration;
-  console.log('[Imm] duration:', durImm, vidImm.videoWidth + 'x' + vidImm.videoHeight);
+  console.log('[Imm]', durImm.toFixed(2) + 's', vidImm.videoWidth + 'x' + vidImm.videoHeight);
 });
 vidCom.addEventListener('loadedmetadata', () => {
   durCom = vidCom.duration;
-  console.log('[Com] duration:', durCom, vidCom.videoWidth + 'x' + vidCom.videoHeight);
+  console.log('[Com]', durCom.toFixed(2) + 's', vidCom.videoWidth + 'x' + vidCom.videoHeight);
 });
 vidImm.load();
 vidCom.load();
@@ -189,36 +204,34 @@ vidCom.load();
 /* ══════════════════════════════════════════════════
    STATE MACHINE
    ───────────────────────────────────────────────
-   displayState  — which video is being shown
-                   'immersion' | 'communion'
-                   (both start at frame 0 = dormant look)
+   displayState   'immersion' | 'communion'
+                  Both start at frame 0 = dormant look.
+                  There is no separate "dormant" video —
+                  dormant is simply progress = 0 on
+                  whichever video is currently active.
 
-   pendingState  — state to switch to once progress
-                   returns to 0 during a cross-transition
-                   null | 'immersion' | 'communion'
+   pendingState   null | 'immersion' | 'communion'
+                  Set during a cross-sense transition.
+                  When progress returns to 0, we switch
+                  displayState to pendingState and begin
+                  awakening the new sense.
 
-   progress      — 0–1, position in the active video
-   progressTarget — where progress is headed (0 or 1)
+   progress       0–1   current position in active video
+   progressTarget 0–1   where progress is heading
 
-   Gesture → state rules (evaluated every frame):
-     ≥ 4 fingers  →  IMMERSION
-     1 finger (index only)  →  COMMUNION
-     0 fingers    →  return to dormant (progress → 0)
-     2–3 fingers  →  hold (do not change progressTarget)
-
-   Cross-transition (IMMERSION ↔ COMMUNION):
-     Set pendingState + progressTarget = 0
-     When progress reaches 0 → switch displayState
-     New state awakens on next gesture frame automatically
+   Gesture rules (evaluated every frame):
+     open palm + CENTER  →  IMMERSION
+     open palm + RIGHT   →  COMMUNION
+     open palm + LEFT    →  hold (reserved for future sense)
+     closed palm         →  return to DORMANT
+     no hand             →  return to DORMANT
 ══════════════════════════════════════════════════ */
-let displayState   = 'immersion';  // which video is active
+let displayState   = 'immersion'; // which video is active
 let pendingState   = null;
 let progress       = 0;
 let progressTarget = 0;
-
-// Seek guard — prevents queuing seeks while one is in flight
-let isSeeking    = false;
-let lastSeekTime = -1;
+let isSeeking      = false;
+let lastSeekTime   = -1;
 
 function getActiveVid() {
   return displayState === 'communion' ? vidCom : vidImm;
@@ -227,7 +240,7 @@ function getActiveDur() {
   return displayState === 'communion' ? durCom : durImm;
 }
 
-// Clear seek guard and redraw when the active video's seek completes
+// Clear seek guard and redraw when a seek completes on the ACTIVE video
 vidImm.addEventListener('seeked', () => {
   if (displayState === 'immersion') { isSeeking = false; drawCurrentFrame(); }
 });
@@ -245,52 +258,52 @@ function seekActiveTo(t) {
 
 function switchToState(newState) {
   displayState = newState;
-  isSeeking    = false;   // reset so new video can be sought immediately
+  isSeeking    = false;  // reset so the new video can be sought immediately
   lastSeekTime = -1;
 }
 
 /* ══════════════════════════════════════════════════
    GESTURE → STATE UPDATER
-   Called every render frame with current finger count
-   (-1 = no hand detected)
+   Called every render frame.
+   hasHand  — hand landmarks were detected this frame
+   isOpen   — open palm detected
+   zone     — 'left' | 'center' | 'right' | null
 ══════════════════════════════════════════════════ */
-function updateStateFromGesture(fingers) {
-  // Step 1: if we've fully returned to 0 and a cross-transition is pending,
-  // switch the active video now (before evaluating the gesture below)
+function updateState(hasHand, isOpen, zone) {
+  // If we've retreated to 0 and a cross-transition is queued, fire it now
   if (progress <= 0 && pendingState !== null) {
     switchToState(pendingState);
     pendingState = null;
     progress = 0;
   }
 
-  // Step 2: evaluate current gesture
-  if (fingers === -1 || fingers === 0) {
-    // No hand or fist → retreat to dormant
+  // ── No hand, or hand is closed → return to dormant ──
+  if (!hasHand || !isOpen) {
     progressTarget = 0;
     pendingState   = null;  // cancel any queued cross-transition
     return;
   }
 
-  if (fingers === 2 || fingers === 3) {
-    // Neutral zone — hold whatever is currently happening
+  // ── Open palm detected ──
+  if (zone === 'left') {
+    // Reserved — hold whatever is currently happening
     return;
   }
 
-  // fingers is 1 (COMMUNION) or ≥4 (IMMERSION)
-  const wanted = fingers >= 4 ? 'immersion' : 'communion';
+  const wanted = zone === 'center' ? 'immersion' : 'communion';
 
   if (displayState === wanted) {
-    // Already in the right state → advance toward fully awake
+    // Already showing the right sense → advance toward fully awake
     progressTarget = 1;
     pendingState   = null;
   } else if (progress <= 0.001) {
-    // At (or essentially at) frame 0 → switch directly, no retreat needed
+    // At frame 0 → switch directly without needing to retreat
     switchToState(wanted);
     progressTarget = 1;
     pendingState   = null;
   } else {
-    // Currently in the wrong state with progress > 0
-    // → retreat to 0 first, then awaken the wanted state
+    // Wrong sense is active with progress > 0
+    // → retreat to 0 first, then awaken the wanted sense
     progressTarget = 0;
     pendingState   = wanted;
   }
@@ -299,13 +312,13 @@ function updateStateFromGesture(fingers) {
 /* ══════════════════════════════════════════════════
    HAND TRACKING STATE
 ══════════════════════════════════════════════════ */
-let handVisible    = false;
-let currentZone    = null;
-let lastZoneLog    = null;
-let currentFingers = -1;
-let landmarker     = null;
-let camEl          = null;
-let lastTs         = -1;
+let handVisible = false;
+let openPalm    = false;
+let currentZone = null;
+let lastZoneLog = null;
+let landmarker  = null;
+let camEl       = null;
+let lastTs      = -1;
 
 /* ══════════════════════════════════════════════════
    RENDER LOOP
@@ -313,33 +326,32 @@ let lastTs         = -1;
 function frame(ts) {
   requestAnimationFrame(frame);
 
-  // Run MediaPipe hand detection on every new camera frame
+  // Hand detection
   if (landmarker && camEl && camEl.readyState >= 2 && ts !== lastTs) {
     lastTs = ts;
     try { processHand(landmarker.detectForVideo(camEl, ts).landmarks); }
     catch {}
   }
 
-  // State machine + progress
-  updateStateFromGesture(handVisible ? currentFingers : -1);
+  // Update state from current gesture
+  updateState(handVisible, openPalm, currentZone);
 
+  // Advance progress toward target (fixed step = consistent, no stutter)
   if (progressTarget > progress) {
     progress = Math.min(progressTarget, progress + STEP_APPROACH);
   } else if (progressTarget < progress) {
     progress = Math.max(progressTarget, progress - STEP_RETREAT);
   }
 
-  // Seek the active video to the current progress position
+  // Scrub the active video
   const dur = getActiveDur();
-  if (dur > 0) {
-    seekActiveTo(Math.max(0, Math.min(1, progress)) * dur);
-  }
+  if (dur > 0) seekActiveTo(Math.max(0, Math.min(1, progress)) * dur);
 
-  // Debug display
+  // ── Debug display ──
   const isReturning = pendingState !== null;
   const isDormant   = progress <= 0.001 && progressTarget <= 0;
-  let stateLabel, stateClass;
 
+  let stateLabel, stateClass;
   if (isReturning) {
     stateLabel = `${displayState.toUpperCase()} → ${pendingState.toUpperCase()}`;
     stateClass = 'returning';
@@ -351,78 +363,65 @@ function frame(ts) {
     stateClass = displayState;
   }
 
-  dState.textContent   = stateLabel;
-  dState.className     = stateClass;
-  dFingers.textContent = currentFingers >= 0 ? String(currentFingers) : '—';
-  dPending.textContent = pendingState ?? '—';
-  dProg.textContent    = progress.toFixed(3);
-  dTgt.textContent     = progressTarget.toFixed(3);
-  dTime.textContent    = getActiveVid().currentTime.toFixed(3);
+  dState.textContent  = stateLabel;
+  dState.className    = stateClass;
+  dZone.textContent   = currentZone ? currentZone.toUpperCase() : '—';
+  dHand.textContent   = handVisible ? 'true' : 'false';
+  dOpen.textContent   = openPalm    ? 'true' : 'false';
+  dProg.textContent   = progress.toFixed(3);
 }
 requestAnimationFrame(frame);
 
 /* ══════════════════════════════════════════════════
-   FINGER COUNTING
-   Uses MediaPipe landmarks (normalized 0–1 coords).
-   y increases downward, so tip.y < pip.y = finger up.
-
-   Returns:
-     0   = fist (all fingers down)       → DORMANT
-     1   = index only (pointing)         → COMMUNION
-     2–3 = partial (hold current state)
-     ≥4  = open palm                     → IMMERSION
+   OPEN PALM DETECTION
+   All four main fingers must have their tip clearly
+   above their PIP joint (lower y value = higher up).
+   Thumb is intentionally excluded — unreliable across
+   hand orientations and not needed for this gesture.
 ══════════════════════════════════════════════════ */
-function calcHandSize(lm) {
-  const w = lm[0], t = lm[12];
-  const ar = innerWidth / innerHeight;
-  return Math.sqrt(((t.x - w.x) * ar) ** 2 + (t.y - w.y) ** 2);
+function detectOpenPalm(lm) {
+  return (
+    lm[8].y  < lm[6].y  - EXTEND_MARGIN &&  // index
+    lm[12].y < lm[10].y - EXTEND_MARGIN &&  // middle
+    lm[16].y < lm[14].y - EXTEND_MARGIN &&  // ring
+    lm[20].y < lm[18].y - EXTEND_MARGIN     // pinky
+  );
 }
 
-function countExtendedFingers(lm) {
-  // 4 main fingers: tip y < pip y → extended
-  const indexUp  = lm[8].y  < lm[6].y;
-  const middleUp = lm[12].y < lm[10].y;
-  const ringUp   = lm[16].y < lm[14].y;
-  const pinkyUp  = lm[20].y < lm[18].y;
-  let count = [indexUp, middleUp, ringUp, pinkyUp].filter(Boolean).length;
+/* ══════════════════════════════════════════════════
+   ZONE DETECTION
+   Uses mirror-corrected palm X so LEFT = visitor's left.
+══════════════════════════════════════════════════ */
+function getPalmX(lm) {
+  // Average of wrist + index MCP + pinky MCP
+  return (lm[0].x + lm[5].x + lm[17].x) / 3;
+}
 
-  // Thumb: tip far from MCP joint, normalized by hand size
-  const sz  = calcHandSize(lm);
-  const ar  = innerWidth / innerHeight;
-  const tdx = (lm[4].x - lm[2].x) * ar;
-  const tdy = lm[4].y - lm[2].y;
-  if (sz > 0 && Math.sqrt(tdx * tdx + tdy * tdy) > sz * 0.4) count++;
-
-  // "1 finger" for COMMUNION must be index only — nothing else up
-  // (prevents 2-finger peace sign being misread as COMMUNION)
-  if (count === 1 && !indexUp) return 2; // some other single finger → treat as hold
-
-  return count;
+function getZone(lm) {
+  const sx = 1 - getPalmX(lm);  // mirror-correct: MediaPipe x is flipped
+  if (sx < ZONE_LEFT_END)    return 'left';
+  if (sx < ZONE_RIGHT_START) return 'center';
+  return 'right';
 }
 
 /* ══════════════════════════════════════════════════
    HAND PROCESSING (called each MediaPipe frame)
 ══════════════════════════════════════════════════ */
-function getPalmX(lm) { return (lm[0].x + lm[5].x + lm[17].x) / 3; }
-function getZone(nx) {
-  const sx = 1 - nx; // mirror-correct
-  return sx < ZONE_LEFT_END ? 'left' : sx < ZONE_RIGHT_START ? 'center' : 'right';
-}
-
 function processHand(sets) {
   if (!sets || sets.length === 0) {
     if (handVisible) { handVisible = false; currentZone = lastZoneLog = null; }
-    currentFingers = -1;
+    openPalm = false;
     return;
   }
 
+  const lm = sets[0];
   handVisible = true;
-  const lm   = sets[0];
-  const zone = getZone(getPalmX(lm));
-
-  currentFingers = countExtendedFingers(lm);
+  openPalm    = detectOpenPalm(lm);
+  const zone  = getZone(lm);
 
   if (zone !== currentZone) currentZone = zone;
+
+  // Zone-change logging
   if (zone !== lastZoneLog) {
     lastZoneLog = zone;
     if (zone === 'left')  console.log('LEFT SENSE');
@@ -432,41 +431,35 @@ function processHand(sets) {
 
 /* ══════════════════════════════════════════════════
    START BUTTON
-   Both videos must be play()→pause() unlocked inside
-   the click handler to satisfy browser autoplay policy.
+   Both videos unlocked inside the click handler
+   (required by browser autoplay policy).
 ══════════════════════════════════════════════════ */
 startScreen.addEventListener('click', async () => {
   startScreen.classList.add('gone');
 
-  // Unlock both videos for seeking
   try {
     await vidImm.play(); vidImm.pause(); vidImm.currentTime = 0;
     await vidCom.play(); vidCom.pause(); vidCom.currentTime = 0;
     console.log('[Video] both unlocked');
-  } catch(e) {
-    console.warn('[Video] unlock failed:', e.name);
-  }
+  } catch(e) { console.warn('[Video] unlock:', e.name); }
 
-  // Camera
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
     });
 
-    // Hidden video for MediaPipe
+    // Hidden video for MediaPipe detection
     camEl = document.createElement('video');
     camEl.srcObject = stream; camEl.muted = true; camEl.playsInline = true;
     await camEl.play();
 
-    // Visible preview in corner
+    // Visible mirrored preview (bottom-right)
     const preview = document.getElementById('cam-preview');
     preview.srcObject = stream;
     preview.style.display = 'block';
 
     await loadTracker();
-  } catch(e) {
-    console.warn('[Camera]', e.name);
-  }
+  } catch(e) { console.warn('[Camera]', e.name); }
 });
 
 /* ══════════════════════════════════════════════════
