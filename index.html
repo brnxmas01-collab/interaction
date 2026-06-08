@@ -8,30 +8,54 @@
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
 
-    /* Canvas is the only visual — sized via JS at devicePixelRatio */
     #cv {
       position: fixed; top: 0; left: 0;
       width: 100vw; height: 100vh;
       z-index: 1;
-      /* Prevent browser from adding any extra smoothing on top of ours */
-      image-rendering: -webkit-optimize-contrast;
-      image-rendering: crisp-edges;
     }
 
-    /* Video is hidden — only used as a decode source */
-    #vid { display: none; }
+    /* Both video elements are hidden — decode sources only */
+    #vid-imm, #vid-com { display: none; }
 
-    /* Debug */
+    /* Debug overlay */
     #debug {
       position: fixed; top: 16px; left: 16px; z-index: 30;
       pointer-events: none;
-      font-family: monospace; font-size: 13px; line-height: 2.1;
+      font-family: monospace; font-size: 13px; line-height: 2.2;
       color: #fff; background: rgba(0,0,0,0.65);
       padding: 10px 16px; border-radius: 7px;
       border: 1px solid rgba(255,255,255,0.12);
     }
     #debug b  { color: rgba(255,255,255,0.35); font-weight: normal; }
     #debug em { color: #7cf; font-style: normal; }
+
+    /* Big state label */
+    #d-state {
+      display: block;
+      font-size: 15px; font-weight: bold;
+      letter-spacing: 0.15em; text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    #d-state.dormant    { color: #888; }
+    #d-state.immersion  { color: #afd; }
+    #d-state.communion  { color: #fad; }
+    #d-state.returning  { color: #fd8; }   /* retreating to switch */
+
+    /* Camera preview */
+    #cam-preview {
+      position: fixed; right: 20px; bottom: 20px;
+      width: 180px; height: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.25);
+      background: #000;
+      z-index: 1000; opacity: 0.9;
+      transform: scaleX(-1);
+      display: none;
+      pointer-events: none;
+    }
+    @media (max-width: 768px) {
+      #cam-preview { width: 120px; right: 12px; bottom: 12px; }
+    }
 
     /* Start screen */
     #start-screen {
@@ -46,50 +70,30 @@
       padding: 16px 48px; border: none; border-radius: 8px;
       background: #fff; color: #000; cursor: pointer;
     }
-
-    /* Camera preview — bottom-right corner */
-    #cam-preview {
-      position: fixed;
-      right: 20px;
-      bottom: 20px;
-      width: 180px;
-      height: auto;
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.25);
-      background: #000;
-      z-index: 1000;
-      opacity: 0.9;
-      transform: scaleX(-1);        /* mirror so it feels natural */
-      display: none;                 /* hidden until camera starts */
-      pointer-events: none;
-    }
-    @media (max-width: 768px) {
-      #cam-preview { width: 120px; right: 12px; bottom: 12px; }
-    }
   </style>
 </head>
 <body>
 
-<!-- Hidden video: decode source only -->
-<video id="vid" src="public/focus_transition.mp4"
+<!-- Hidden videos — decode sources only, canvas renders them -->
+<video id="vid-imm" src="public/focus_transition.mp4"
+       muted playsinline preload="auto"></video>
+<video id="vid-com" src="public/communion_transition.mp4"
        muted playsinline preload="auto"></video>
 
-<!-- Canvas: the actual display, rendered at devicePixelRatio -->
+<!-- Canvas: the only visible display, rendered at devicePixelRatio -->
 <canvas id="cv"></canvas>
 
-<div id="debug">
-  <div><b>hand         </b><em id="d-hand">false</em></div>
-  <div><b>zone         </b><em id="d-zone">—</em></div>
-  <div><b>handSize     </b><em id="d-size">—</em></div>
-  <div><b>targetProg   </b><em id="d-tgt">0.000</em></div>
-  <div><b>currentProg  </b><em id="d-cur">0.000</em></div>
-  <div><b>time         </b><em id="d-time">0.000</em> s</div>
-  <div><b>duration     </b><em id="d-dur">—</em> s</div>
-  <div><b>dpr          </b><em id="d-dpr">—</em></div>
-</div>
-
-<!-- Camera preview — purely visual, does not affect hand tracking -->
+<!-- Camera preview — same stream as tracking, purely decorative -->
 <video id="cam-preview" muted playsinline autoplay></video>
+
+<div id="debug">
+  <em id="d-state" class="dormant">DORMANT</em>
+  <div><b>fingers  </b><em id="d-fingers">—</em></div>
+  <div><b>pending  </b><em id="d-pending">—</em></div>
+  <div><b>progress </b><em id="d-prog">0.000</em></div>
+  <div><b>target   </b><em id="d-tgt">0.000</em></div>
+  <div><b>time     </b><em id="d-time">0.000</em> s</div>
+</div>
 
 <div id="start-screen">
   <button id="start-btn">START</button>
@@ -98,17 +102,11 @@
 <script type="module">
 
 /* ══════════════════════════════════════════════════
-   CONFIG — tune for your physical space
+   CONFIG
 ══════════════════════════════════════════════════ */
-const DIST_FAR   = 0.10;  // hand size below → progress 0
-const DIST_CLOSE = 0.38;  // hand size above → progress 1
-
-// Both directions use a fixed step per frame (moveTowards).
-// Fixed step = perfectly consistent speed, no exponential stutter near 0.
-// At 60fps:  0.012 × 60 = 0.72/s → ~1.4s to fully awaken
-//            0.004 × 60 = 0.24/s → ~4.2s to fully fall asleep
-// At 60fps:  0.009 × 60 = 0.54/s → ~1.9s to fully awaken
-//            0.008 × 60 = 0.48/s → ~2.1s to fully fall asleep
+// Fixed step per frame (at 60fps):
+//   0.009 × 60 = 0.54/s  →  ~1.9s to fully awaken
+//   0.008 × 60 = 0.48/s  →  ~2.1s to fully return
 const STEP_APPROACH = 0.009;
 const STEP_RETREAT  = 0.008;
 
@@ -118,33 +116,26 @@ const ZONE_RIGHT_START = 0.66;
 /* ══════════════════════════════════════════════════
    DOM
 ══════════════════════════════════════════════════ */
-const vid         = document.getElementById('vid');
+const vidImm      = document.getElementById('vid-imm');
+const vidCom      = document.getElementById('vid-com');
 const cv          = document.getElementById('cv');
 const ctx         = cv.getContext('2d');
 const startScreen = document.getElementById('start-screen');
-
-const dHand = document.getElementById('d-hand');
-const dZone = document.getElementById('d-zone');
-const dSize = document.getElementById('d-size');
-const dTgt  = document.getElementById('d-tgt');
-const dCur  = document.getElementById('d-cur');
-const dTime = document.getElementById('d-time');
-const dDur  = document.getElementById('d-dur');
-const dDpr  = document.getElementById('d-dpr');
+const dState      = document.getElementById('d-state');
+const dFingers    = document.getElementById('d-fingers');
+const dPending    = document.getElementById('d-pending');
+const dProg       = document.getElementById('d-prog');
+const dTgt        = document.getElementById('d-tgt');
+const dTime       = document.getElementById('d-time');
 
 /* ══════════════════════════════════════════════════
    CANVAS — high-DPI setup
-   Canvas internal pixels = CSS pixels × dpr,
-   so on a Retina screen we render at 2× resolution
-   and the browser does no upscaling.
 ══════════════════════════════════════════════════ */
 const DPR = Math.min(window.devicePixelRatio || 1, 3);
-dDpr.textContent = DPR.toFixed(1);
 
 function resizeCanvas() {
   cv.width  = Math.round(window.innerWidth  * DPR);
   cv.height = Math.round(window.innerHeight * DPR);
-  // CSS size stays the same (fills viewport)
   cv.style.width  = window.innerWidth  + 'px';
   cv.style.height = window.innerHeight + 'px';
 }
@@ -152,30 +143,26 @@ resizeCanvas();
 window.addEventListener('resize', () => { resizeCanvas(); drawCurrentFrame(); });
 
 /* ══════════════════════════════════════════════════
-   DRAW — object-fit: cover at DPR resolution
-   Scales the video frame so it fills the canvas,
-   cropping equally on both sides if needed.
+   DRAW
+   Always reads from the currently active video.
+   Adds a black gradient at the bottom to mask
+   the Kling AI watermark.
 ══════════════════════════════════════════════════ */
 function drawCurrentFrame() {
-  if (!vid.videoWidth) return;   // no frame decoded yet
+  const v = getActiveVid();
+  if (!v || !v.videoWidth) return;
 
-  const cw = cv.width;   // canvas pixels (already × DPR)
-  const ch = cv.height;
-  const fw = vid.videoWidth;
-  const fh = vid.videoHeight;
+  const cw = cv.width, ch = cv.height;
+  const fw = v.videoWidth, fh = v.videoHeight;
 
-  // Cover: scale so the frame fills the canvas on both axes
+  // Cover scaling
   const scale = Math.max(cw / fw, ch / fh);
-  const dw = fw * scale;
-  const dh = fh * scale;
-  const dx = (cw - dw) / 2;   // horizontal centering offset
-  const dy = (ch - dh) / 2;   // vertical centering offset
+  const dw = fw * scale, dh = fh * scale;
+  const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
 
-  ctx.drawImage(vid, dx, dy, dw, dh);
+  ctx.drawImage(v, dx, dy, dw, dh);
 
-  // ── Mask Kling AI watermark ──────────────────────────────────
-  // Black gradient over the bottom 12% of the canvas hides the text
-  // without cropping or distorting the creature above it.
+  // Watermark mask: gradient over bottom 12%
   const gradTop = ch * 0.88;
   const grad = ctx.createLinearGradient(0, gradTop, 0, ch);
   grad.addColorStop(0, 'rgba(0,0,0,0)');
@@ -184,59 +171,141 @@ function drawCurrentFrame() {
   ctx.fillRect(0, gradTop, cw, ch - gradTop);
 }
 
-// Draw as soon as a seek completes, then clear the guard so the next seek can go
-vid.addEventListener('seeked', () => {
-  isSeeking = false;
-  drawCurrentFrame();
-});
-
 /* ══════════════════════════════════════════════════
    VIDEO SETUP
 ══════════════════════════════════════════════════ */
-let duration = 0;
-vid.addEventListener('loadedmetadata', () => {
-  duration = vid.duration;
-  dDur.textContent = duration.toFixed(3);
-  console.log('[Video] duration:', duration,
-              ' size:', vid.videoWidth, '×', vid.videoHeight);
+let durImm = 0, durCom = 0;
+vidImm.addEventListener('loadedmetadata', () => {
+  durImm = vidImm.duration;
+  console.log('[Imm] duration:', durImm, vidImm.videoWidth + 'x' + vidImm.videoHeight);
 });
-vid.load();
+vidCom.addEventListener('loadedmetadata', () => {
+  durCom = vidCom.duration;
+  console.log('[Com] duration:', durCom, vidCom.videoWidth + 'x' + vidCom.videoHeight);
+});
+vidImm.load();
+vidCom.load();
 
 /* ══════════════════════════════════════════════════
-   PROGRESS STATE
-   targetProgress:  what the hand is asking for (0–1)
-   currentProgress: what is actually displayed (lerps toward target)
+   STATE MACHINE
+   ───────────────────────────────────────────────
+   displayState  — which video is being shown
+                   'immersion' | 'communion'
+                   (both start at frame 0 = dormant look)
 
-   When the hand disappears → targetProgress goes to 0.
-   currentProgress uses the slow LERP_RETREAT speed so
-   the creature gradually returns to its dormant state —
-   never an instant jump.
+   pendingState  — state to switch to once progress
+                   returns to 0 during a cross-transition
+                   null | 'immersion' | 'communion'
+
+   progress      — 0–1, position in the active video
+   progressTarget — where progress is headed (0 or 1)
+
+   Gesture → state rules (evaluated every frame):
+     ≥ 4 fingers  →  IMMERSION
+     1 finger (index only)  →  COMMUNION
+     0 fingers    →  return to dormant (progress → 0)
+     2–3 fingers  →  hold (do not change progressTarget)
+
+   Cross-transition (IMMERSION ↔ COMMUNION):
+     Set pendingState + progressTarget = 0
+     When progress reaches 0 → switch displayState
+     New state awakens on next gesture frame automatically
 ══════════════════════════════════════════════════ */
-let targetProgress  = 0;
-let currentProgress = 0;
-let lastSeekTime    = -1;
-let isSeeking       = false;   // guard: skip new seeks while one is pending
+let displayState   = 'immersion';  // which video is active
+let pendingState   = null;
+let progress       = 0;
+let progressTarget = 0;
 
-function seekTo(t) {
-  // Never queue a seek while the previous one is still in flight —
-  // this is the primary cause of reverse stutter.
+// Seek guard — prevents queuing seeks while one is in flight
+let isSeeking    = false;
+let lastSeekTime = -1;
+
+function getActiveVid() {
+  return displayState === 'communion' ? vidCom : vidImm;
+}
+function getActiveDur() {
+  return displayState === 'communion' ? durCom : durImm;
+}
+
+// Clear seek guard and redraw when the active video's seek completes
+vidImm.addEventListener('seeked', () => {
+  if (displayState === 'immersion') { isSeeking = false; drawCurrentFrame(); }
+});
+vidCom.addEventListener('seeked', () => {
+  if (displayState === 'communion') { isSeeking = false; drawCurrentFrame(); }
+});
+
+function seekActiveTo(t) {
   if (isSeeking) return;
   if (Math.abs(t - lastSeekTime) < 0.008) return;
   isSeeking    = true;
   lastSeekTime = t;
-  vid.currentTime = t;
-  // drawCurrentFrame() + isSeeking = false happen in the 'seeked' handler
+  getActiveVid().currentTime = t;
+}
+
+function switchToState(newState) {
+  displayState = newState;
+  isSeeking    = false;   // reset so new video can be sought immediately
+  lastSeekTime = -1;
 }
 
 /* ══════════════════════════════════════════════════
-   HAND STATE
+   GESTURE → STATE UPDATER
+   Called every render frame with current finger count
+   (-1 = no hand detected)
 ══════════════════════════════════════════════════ */
-let handVisible = false;
-let currentZone = null;
-let lastZoneLog = null;
-let landmarker  = null;
-let camEl       = null;
-let lastTs      = -1;
+function updateStateFromGesture(fingers) {
+  // Step 1: if we've fully returned to 0 and a cross-transition is pending,
+  // switch the active video now (before evaluating the gesture below)
+  if (progress <= 0 && pendingState !== null) {
+    switchToState(pendingState);
+    pendingState = null;
+    progress = 0;
+  }
+
+  // Step 2: evaluate current gesture
+  if (fingers === -1 || fingers === 0) {
+    // No hand or fist → retreat to dormant
+    progressTarget = 0;
+    pendingState   = null;  // cancel any queued cross-transition
+    return;
+  }
+
+  if (fingers === 2 || fingers === 3) {
+    // Neutral zone — hold whatever is currently happening
+    return;
+  }
+
+  // fingers is 1 (COMMUNION) or ≥4 (IMMERSION)
+  const wanted = fingers >= 4 ? 'immersion' : 'communion';
+
+  if (displayState === wanted) {
+    // Already in the right state → advance toward fully awake
+    progressTarget = 1;
+    pendingState   = null;
+  } else if (progress <= 0.001) {
+    // At (or essentially at) frame 0 → switch directly, no retreat needed
+    switchToState(wanted);
+    progressTarget = 1;
+    pendingState   = null;
+  } else {
+    // Currently in the wrong state with progress > 0
+    // → retreat to 0 first, then awaken the wanted state
+    progressTarget = 0;
+    pendingState   = wanted;
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   HAND TRACKING STATE
+══════════════════════════════════════════════════ */
+let handVisible    = false;
+let currentZone    = null;
+let lastZoneLog    = null;
+let currentFingers = -1;
+let landmarker     = null;
+let camEl          = null;
+let lastTs         = -1;
 
 /* ══════════════════════════════════════════════════
    RENDER LOOP
@@ -244,66 +313,114 @@ let lastTs      = -1;
 function frame(ts) {
   requestAnimationFrame(frame);
 
-  // Hand detection
+  // Run MediaPipe hand detection on every new camera frame
   if (landmarker && camEl && camEl.readyState >= 2 && ts !== lastTs) {
     lastTs = ts;
     try { processHand(landmarker.detectForVideo(camEl, ts).landmarks); }
     catch {}
   }
 
-  // ── Smooth interpolation (moveTowards both directions) ───────
-  // Fixed step means consistent speed at every point — no stutter near 0.
-  if (targetProgress > currentProgress) {
-    currentProgress = Math.min(targetProgress, currentProgress + STEP_APPROACH);
-  } else if (targetProgress < currentProgress) {
-    currentProgress = Math.max(targetProgress, currentProgress - STEP_RETREAT);
+  // State machine + progress
+  updateStateFromGesture(handVisible ? currentFingers : -1);
+
+  if (progressTarget > progress) {
+    progress = Math.min(progressTarget, progress + STEP_APPROACH);
+  } else if (progressTarget < progress) {
+    progress = Math.max(progressTarget, progress - STEP_RETREAT);
   }
 
-  // ── Scrub video to currentProgress ───────────────────────────
-  if (duration > 0) {
-    const t = Math.max(0, Math.min(1, currentProgress)) * duration;
-    seekTo(t);
+  // Seek the active video to the current progress position
+  const dur = getActiveDur();
+  if (dur > 0) {
+    seekActiveTo(Math.max(0, Math.min(1, progress)) * dur);
   }
 
-  // ── Debug ─────────────────────────────────────────────────────
-  dHand.textContent = handVisible ? 'true' : 'false';
-  dZone.textContent = currentZone ?? '—';
-  dTgt.textContent  = targetProgress.toFixed(3);
-  dCur.textContent  = currentProgress.toFixed(3);
-  dTime.textContent = vid.currentTime.toFixed(3);
+  // Debug display
+  const isReturning = pendingState !== null;
+  const isDormant   = progress <= 0.001 && progressTarget <= 0;
+  let stateLabel, stateClass;
+
+  if (isReturning) {
+    stateLabel = `${displayState.toUpperCase()} → ${pendingState.toUpperCase()}`;
+    stateClass = 'returning';
+  } else if (isDormant) {
+    stateLabel = 'DORMANT';
+    stateClass = 'dormant';
+  } else {
+    stateLabel = displayState.toUpperCase();
+    stateClass = displayState;
+  }
+
+  dState.textContent   = stateLabel;
+  dState.className     = stateClass;
+  dFingers.textContent = currentFingers >= 0 ? String(currentFingers) : '—';
+  dPending.textContent = pendingState ?? '—';
+  dProg.textContent    = progress.toFixed(3);
+  dTgt.textContent     = progressTarget.toFixed(3);
+  dTime.textContent    = getActiveVid().currentTime.toFixed(3);
 }
 requestAnimationFrame(frame);
 
 /* ══════════════════════════════════════════════════
-   HAND PROCESSING
+   FINGER COUNTING
+   Uses MediaPipe landmarks (normalized 0–1 coords).
+   y increases downward, so tip.y < pip.y = finger up.
+
+   Returns:
+     0   = fist (all fingers down)       → DORMANT
+     1   = index only (pointing)         → COMMUNION
+     2–3 = partial (hold current state)
+     ≥4  = open palm                     → IMMERSION
 ══════════════════════════════════════════════════ */
 function calcHandSize(lm) {
   const w = lm[0], t = lm[12];
   const ar = innerWidth / innerHeight;
   return Math.sqrt(((t.x - w.x) * ar) ** 2 + (t.y - w.y) ** 2);
 }
+
+function countExtendedFingers(lm) {
+  // 4 main fingers: tip y < pip y → extended
+  const indexUp  = lm[8].y  < lm[6].y;
+  const middleUp = lm[12].y < lm[10].y;
+  const ringUp   = lm[16].y < lm[14].y;
+  const pinkyUp  = lm[20].y < lm[18].y;
+  let count = [indexUp, middleUp, ringUp, pinkyUp].filter(Boolean).length;
+
+  // Thumb: tip far from MCP joint, normalized by hand size
+  const sz  = calcHandSize(lm);
+  const ar  = innerWidth / innerHeight;
+  const tdx = (lm[4].x - lm[2].x) * ar;
+  const tdy = lm[4].y - lm[2].y;
+  if (sz > 0 && Math.sqrt(tdx * tdx + tdy * tdy) > sz * 0.4) count++;
+
+  // "1 finger" for COMMUNION must be index only — nothing else up
+  // (prevents 2-finger peace sign being misread as COMMUNION)
+  if (count === 1 && !indexUp) return 2; // some other single finger → treat as hold
+
+  return count;
+}
+
+/* ══════════════════════════════════════════════════
+   HAND PROCESSING (called each MediaPipe frame)
+══════════════════════════════════════════════════ */
 function getPalmX(lm) { return (lm[0].x + lm[5].x + lm[17].x) / 3; }
 function getZone(nx) {
-  const sx = 1 - nx;
+  const sx = 1 - nx; // mirror-correct
   return sx < ZONE_LEFT_END ? 'left' : sx < ZONE_RIGHT_START ? 'center' : 'right';
 }
 
 function processHand(sets) {
   if (!sets || sets.length === 0) {
-    if (handVisible) {
-      handVisible = false;
-      currentZone = lastZoneLog = null;
-    }
-    // No hand → target returns to 0.
-    // currentProgress will drift back slowly via LERP_RETREAT.
-    targetProgress = 0;
+    if (handVisible) { handVisible = false; currentZone = lastZoneLog = null; }
+    currentFingers = -1;
     return;
   }
 
   handVisible = true;
   const lm   = sets[0];
   const zone = getZone(getPalmX(lm));
-  const size = calcHandSize(lm);
+
+  currentFingers = countExtendedFingers(lm);
 
   if (zone !== currentZone) currentZone = zone;
   if (zone !== lastZoneLog) {
@@ -311,50 +428,37 @@ function processHand(sets) {
     if (zone === 'left')  console.log('LEFT SENSE');
     if (zone === 'right') console.log('RIGHT SENSE');
   }
-
-  if (zone === 'center') {
-    // Continuous mapping: hand size → progress 0–1
-    targetProgress = Math.max(0, Math.min(1,
-      (size - DIST_FAR) / (DIST_CLOSE - DIST_FAR)
-    ));
-  } else {
-    targetProgress = 0;
-  }
-
-  dSize.textContent = size.toFixed(3);
 }
 
 /* ══════════════════════════════════════════════════
    START BUTTON
-   vid.play() must be called synchronously within the
-   click handler to satisfy browser autoplay policy
-   and unlock the video element for seeking.
+   Both videos must be play()→pause() unlocked inside
+   the click handler to satisfy browser autoplay policy.
 ══════════════════════════════════════════════════ */
 startScreen.addEventListener('click', async () => {
   startScreen.classList.add('gone');
 
-  // Unlock video seeking
+  // Unlock both videos for seeking
   try {
-    await vid.play();
-    vid.pause();
-    vid.currentTime = 0;
-    console.log('[Video] unlocked');
+    await vidImm.play(); vidImm.pause(); vidImm.currentTime = 0;
+    await vidCom.play(); vidCom.pause(); vidCom.currentTime = 0;
+    console.log('[Video] both unlocked');
   } catch(e) {
     console.warn('[Video] unlock failed:', e.name);
   }
 
-  // Start camera
+  // Camera
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
     });
 
-    // Hidden video for MediaPipe hand detection
+    // Hidden video for MediaPipe
     camEl = document.createElement('video');
     camEl.srcObject = stream; camEl.muted = true; camEl.playsInline = true;
     await camEl.play();
 
-    // Visible preview in the corner — same stream, purely decorative
+    // Visible preview in corner
     const preview = document.getElementById('cam-preview');
     preview.srcObject = stream;
     preview.style.display = 'block';
