@@ -33,6 +33,7 @@
 
     /* State label gets its own colour */
     #d-state.dormant   { color: #888; }
+    #d-state.silence   { color: #adf; }
     #d-state.immersion { color: #afd; }
     #d-state.communion { color: #fad; }
     #d-state.returning { color: #fd8; }
@@ -71,6 +72,8 @@
 <body>
 
 <!-- Hidden videos — decode sources only -->
+<video id="vid-sil" src="public/silence_transition.mp4"
+       muted playsinline preload="auto"></video>
 <video id="vid-imm" src="public/focus_transition.mp4"
        muted playsinline preload="auto"></video>
 <video id="vid-com" src="public/communion_transition.mp4"
@@ -116,9 +119,11 @@
    CONFIG
 ══════════════════════════════════════════════════ */
 // moveTowards step per frame at 60fps:
+//   SILENCE   approach: 0.005 × 60 = 0.30/s  →  ~3.3 s
 //   IMMERSION approach: 0.009 × 60 = 0.54/s  →  ~1.9 s
-//   COMMUNION approach: 0.005 × 60 = 0.30/s  →  ~3.3 s  (50% slower)
-//   retreat (both):     0.008 × 60 = 0.48/s  →  ~2.1 s
+//   COMMUNION approach: 0.005 × 60 = 0.30/s  →  ~3.3 s
+//   retreat (all):      0.008 × 60 = 0.48/s  →  ~2.1 s
+const SILENCE_STEP_APPROACH   = 0.005;
 const IMMERSION_STEP_APPROACH = 0.009;
 const COMMUNION_STEP_APPROACH = 0.005;
 const STEP_RETREAT             = 0.008;
@@ -137,6 +142,7 @@ const OPEN_PALM_MIN   = 3;      // out of 4 main fingers (thumb excluded)
 /* ══════════════════════════════════════════════════
    DOM
 ══════════════════════════════════════════════════ */
+const vidSil      = document.getElementById('vid-sil');
 const vidImm      = document.getElementById('vid-imm');
 const vidCom      = document.getElementById('vid-com');
 const cv          = document.getElementById('cv');
@@ -193,7 +199,11 @@ function drawCurrentFrame() {
 /* ══════════════════════════════════════════════════
    VIDEO SETUP
 ══════════════════════════════════════════════════ */
-let durImm = 0, durCom = 0;
+let durSil = 0, durImm = 0, durCom = 0;
+vidSil.addEventListener('loadedmetadata', () => {
+  durSil = vidSil.duration;
+  console.log('[Sil]', durSil.toFixed(2) + 's', vidSil.videoWidth + 'x' + vidSil.videoHeight);
+});
 vidImm.addEventListener('loadedmetadata', () => {
   durImm = vidImm.duration;
   console.log('[Imm]', durImm.toFixed(2) + 's', vidImm.videoWidth + 'x' + vidImm.videoHeight);
@@ -202,6 +212,7 @@ vidCom.addEventListener('loadedmetadata', () => {
   durCom = vidCom.duration;
   console.log('[Com]', durCom.toFixed(2) + 's', vidCom.videoWidth + 'x' + vidCom.videoHeight);
 });
+vidSil.load();
 vidImm.load();
 vidCom.load();
 
@@ -238,13 +249,20 @@ let isSeeking      = false;
 let lastSeekTime   = -1;
 
 function getActiveVid() {
-  return displayState === 'communion' ? vidCom : vidImm;
+  if (displayState === 'silence')   return vidSil;
+  if (displayState === 'communion') return vidCom;
+  return vidImm;
 }
 function getActiveDur() {
-  return displayState === 'communion' ? durCom : durImm;
+  if (displayState === 'silence')   return durSil;
+  if (displayState === 'communion') return durCom;
+  return durImm;
 }
 
 // Clear seek guard and redraw when a seek completes on the ACTIVE video
+vidSil.addEventListener('seeked', () => {
+  if (displayState === 'silence')   { isSeeking = false; drawCurrentFrame(); }
+});
 vidImm.addEventListener('seeked', () => {
   if (displayState === 'immersion') { isSeeking = false; drawCurrentFrame(); }
 });
@@ -289,12 +307,10 @@ function updateState(hasHand, isOpen, zone) {
   }
 
   // ── Open palm detected ──
-  if (zone === 'left') {
-    // Reserved — hold whatever is currently happening
-    return;
-  }
-
-  const wanted = zone === 'center' ? 'immersion' : 'communion';
+  const wanted =
+    zone === 'left'   ? 'silence'   :
+    zone === 'center' ? 'immersion' :
+                        'communion';
 
   if (displayState === wanted) {
     // Already showing the right sense → advance toward fully awake
@@ -341,9 +357,10 @@ function frame(ts) {
   updateState(handVisible, openPalm, currentZone);
 
   // Advance progress toward target (fixed step = consistent, no stutter)
-  const stepApproach = displayState === 'communion'
-    ? COMMUNION_STEP_APPROACH
-    : IMMERSION_STEP_APPROACH;
+  const stepApproach =
+    displayState === 'silence'   ? SILENCE_STEP_APPROACH   :
+    displayState === 'communion' ? COMMUNION_STEP_APPROACH :
+                                   IMMERSION_STEP_APPROACH;
 
   if (progressTarget > progress) {
     progress = Math.min(progressTarget, progress + stepApproach);
@@ -447,9 +464,10 @@ startScreen.addEventListener('click', async () => {
   startScreen.classList.add('gone');
 
   try {
+    await vidSil.play(); vidSil.pause(); vidSil.currentTime = 0;
     await vidImm.play(); vidImm.pause(); vidImm.currentTime = 0;
     await vidCom.play(); vidCom.pause(); vidCom.currentTime = 0;
-    console.log('[Video] both unlocked');
+    console.log('[Video] all three unlocked');
   } catch(e) { console.warn('[Video] unlock:', e.name); }
 
   try {
